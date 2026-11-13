@@ -43,7 +43,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='Gen Audio 4.2.0',
+    name='Gen Audio 4.2.1',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

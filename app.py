@@ -19,7 +19,7 @@ from PyQt6.QtGui import QColor, QBrush, QIcon, QPalette
 import licensing
 import updater
 
-APP_VERSION = "4.2.0"
+APP_VERSION = "4.2.1"
 
 
 class ThemeModeControl(QWidget):
@@ -1560,7 +1560,7 @@ class AudioDownloaderApp(QMainWindow):
                         "green")
                 self.button_signal.emit("idle")
 
-    # ---- Cập nhật qua thư mục mạng LAN (chỉ bản đã kích hoạt) ----
+    # ---- Cập nhật qua GitHub Releases (chỉ bản đã kích hoạt) ----
     def check_update(self, manual):
         if self.updating:
             return
@@ -1568,19 +1568,11 @@ class AudioDownloaderApp(QMainWindow):
             if manual:
                 QMessageBox.information(self, "GetAudio", "Chỉ bản đã kích hoạt mới cập nhật được.")
             return
-        folder = updater.get_folder("GetAudio")
-        if not folder:
-            if not manual:
-                return
-            folder = QFileDialog.getExistingDirectory(self, "Chọn thư mục cập nhật (trên mạng LAN)")
-            if not folder:
-                return
-            updater.set_folder("GetAudio", folder)
         self.updating = True
 
         def work():
             try:
-                self.update_signal.emit(updater.check_latest(folder, APP_VERSION), manual)
+                self.update_signal.emit(updater.check_latest(APP_VERSION), manual)
             except Exception as exc:
                 self.update_error_signal.emit(str(exc), manual)
         threading.Thread(target=work, daemon=True).start()
@@ -1618,10 +1610,6 @@ class AudioDownloaderApp(QMainWindow):
         if not manual:
             return
         QMessageBox.warning(self, "GetAudio", f"Không cập nhật được:\n{message}")
-        again = QMessageBox.question(self, "GetAudio", "Chọn lại thư mục cập nhật?")
-        if again == QMessageBox.StandardButton.Yes:
-            updater.set_folder("GetAudio", "")
-            self.check_update(True)
 
     def install_update(self, path):
         try:
