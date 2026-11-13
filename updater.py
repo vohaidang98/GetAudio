@@ -1,13 +1,13 @@
-"""Cập nhật tự động từ thư mục mạng LAN (chỉ dùng thư viện chuẩn).
+"""Cập nhật tự động qua GitHub Releases (chỉ dùng thư viện chuẩn).
 
-Thư mục cập nhật chứa:
-  - version.json : {"version": "1.3.0", "file": "ClipForge-Setup-1.3.0.exe",
-                    "sha256": "<64 ký tự hex>", "notes": "..."}
-  - file cài đặt được ghi trong version.json
+App hỏi https://api.github.com/repos/<OWNER>/<REPO>/releases/latest:
+  - tag_name      : "vX.Y.Z"  -> phiên bản mới nhất
+  - assets        : file chạy  "GetAudio-X.Y.Z.exe"
+                    (tuỳ chọn) "GetAudio-X.Y.Z.exe.sha256" để kiểm tra toàn vẹn
+  - body          : ghi chú phát hành
 
-Tạo thư mục này bằng: python tools\\make_release.py ...
-Chỉ cho tài khoản quản trị quyền GHI vào thư mục này (ai ghi được là đẩy được chương trình
-tới mọi máy), các máy khác chỉ cần quyền ĐỌC.
+Chuẩn bị file đăng bằng: python tools\\make_release.py <file .exe> <phiên bản>
+Ai có quyền tạo Release trên repo là đẩy được chương trình tới mọi máy.
 """
 import hashlib
 import json
@@ -16,7 +16,24 @@ import re
 import shutil
 import subprocess
 import tempfile
-from pathlib import Path
+import urllib.error
+import urllib.request
+
+OWNER = 'vohaidang98'
+REPO = 'GetAudio'
+API_URL = f'https://api.github.com/repos/{OWNER}/{REPO}/releases/latest'
+USER_AGENT = f'{REPO}-Updater'
+TIMEOUT = 30
+
+
+def asset_name(version):
+    """Tên file đăng lên GitHub Release (không dấu cách, GitHub không đổi tên)."""
+    return f'GetAudio-{version}.exe'
+
+
+def local_name(version):
+    """Tên file chạy trên máy (giữ đúng tên PyInstaller tạo ra trong app.spec)."""
+    return f'Gen Audio {version}.exe'
 
 
 def parse_version(text):
@@ -34,65 +51,83 @@ def is_newer(latest, current):
     return a > b
 
 
-def _settings(app):
-    base = os.environ.get('APPDATA') or str(Path.home())
-    return Path(base) / app / 'update.json'
+def _request(url, accept='application/vnd.github+json'):
+    return urllib.request.Request(url, headers={'User-Agent': USER_AGENT, 'Accept': accept})
 
 
-def get_folder(app):
+def _read_sha256(url):
+    with urllib.request.urlopen(_request(url, 'application/octet-stream'), timeout=TIMEOUT) as resp:
+        text = resp.read(4096).decode('utf-8', 'replace')
+    match = re.search(r'\b([0-9a-fA-F]{64})\b', text)
+    if not match:
+        raise ValueError('File .sha256 trên GitHub không chứa mã SHA-256 hợp lệ.')
+    return match.group(1).lower()
+
+
+def check_latest(current):
+    """Trả về dict thông tin bản mới, hoặc None nếu đang là bản mới nhất / chưa có Release."""
     try:
-        return str(json.loads(_settings(app).read_text('utf-8')).get('folder', '')).strip()
-    except Exception:
-        return ''
+        with urllib.request.urlopen(_request(API_URL), timeout=TIMEOUT) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:  # repo chưa có Release nào
+            return None
+        if exc.code == 403:
+            raise ValueError('GitHub tạm chặn do hỏi quá nhiều lần, hãy thử lại sau ít phút.') from exc
+        raise ValueError(f'GitHub trả lỗi {exc.code}.') from exc
+    except urllib.error.URLError as exc:
+        raise ValueError(f'Không kết nối được GitHub:\n{exc.reason}') from exc
 
-
-def set_folder(app, folder):
-    path = _settings(app)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({'folder': str(folder)}), 'utf-8')
-
-
-def check_latest(folder, current):
-    """Trả về dict thông tin bản mới, hoặc None nếu đang là bản mới nhất."""
-    base = Path(folder)
-    manifest = base / 'version.json'
-    if not manifest.is_file():
-        raise ValueError(f'Không tìm thấy version.json trong:\n{folder}')
-    data = json.loads(manifest.read_text('utf-8-sig'))
-    version = str(data.get('version', ''))
-    if not is_newer(version, current):
+    tag = str(data.get('tag_name', '')).strip()
+    version = tag.lstrip('vV')
+    if not parse_version(version) or not is_newer(version, current):
         return None
-    name = str(data.get('file', ''))
-    sha = str(data.get('sha256', '')).lower()
-    if not re.fullmatch(r'[\w .\-]+\.exe', name) or name.strip() != name:
-        raise ValueError('Tên file cập nhật không hợp lệ.')
-    if not re.fullmatch(r'[0-9a-f]{64}', sha):
-        raise ValueError('version.json thiếu mã SHA-256 hợp lệ.')
-    path = base / name
-    if not path.is_file():
-        raise ValueError(f'Chưa thấy file {name} trong thư mục cập nhật.')
-    return {'version': version.lstrip('vV'), 'name': name, 'path': str(path),
-            'sha256': sha, 'notes': str(data.get('notes', ''))}
+
+    assets = {str(a.get('name', '')): str(a.get('browser_download_url', ''))
+              for a in data.get('assets') or [] if isinstance(a, dict)}
+    # Ưu tiên tên chuẩn; chấp nhận cả file dist đăng thẳng (GitHub đổi dấu cách thành dấu chấm).
+    candidates = [asset_name(version), local_name(version), local_name(version).replace(' ', '.')]
+    name = next((n for n in candidates if assets.get(n, '').startswith('https://')), '')
+    if not name:
+        raise ValueError(f'Release {tag} chưa có file {asset_name(version)}.')
+
+    sha = ''
+    sha_url = assets.get(name + '.sha256', '')
+    if sha_url.startswith('https://'):
+        sha = _read_sha256(sha_url)
+
+    return {'version': version, 'name': local_name(version), 'url': assets[name],
+            'sha256': sha, 'notes': str(data.get('body') or '')}
 
 
 def download(info, progress=None):
-    """Chép file cài đặt về máy, kiểm tra SHA-256, trả về đường dẫn file trên máy."""
+    """Tải file từ GitHub về máy, kiểm tra SHA-256 (nếu Release có), trả về đường dẫn file."""
     folder = tempfile.mkdtemp(prefix='app_update_')
     dest = os.path.join(folder, info['name'])
     digest = hashlib.sha256()
-    total = os.path.getsize(info['path'])
-    done = 0
-    with open(info['path'], 'rb') as src, open(dest, 'wb') as out:
-        while True:
-            chunk = src.read(1 << 20)
-            if not chunk:
-                break
-            out.write(chunk)
-            digest.update(chunk)
-            done += len(chunk)
-            if progress and total:
-                progress(done * 100 / total)
-    if digest.hexdigest() != info['sha256']:
+    try:
+        with urllib.request.urlopen(_request(info['url'], 'application/octet-stream'), timeout=TIMEOUT) as resp, \
+                open(dest, 'wb') as out:
+            total = int(resp.headers.get('Content-Length') or 0)
+            done = 0
+            while True:
+                chunk = resp.read(1 << 20)
+                if not chunk:
+                    break
+                out.write(chunk)
+                digest.update(chunk)
+                done += len(chunk)
+                if progress and total:
+                    progress(done * 100 / total)
+        if total and done != total:
+            raise ValueError('Tải bản cập nhật không đủ dung lượng, đã huỷ cập nhật.')
+    except urllib.error.URLError as exc:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise ValueError(f'Không tải được bản cập nhật:\n{getattr(exc, "reason", exc)}') from exc
+    except Exception:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
+    if info.get('sha256') and digest.hexdigest() != info['sha256']:
         shutil.rmtree(folder, ignore_errors=True)
         raise ValueError('File cập nhật bị lỗi (sai mã SHA-256), đã huỷ cập nhật.')
     return dest

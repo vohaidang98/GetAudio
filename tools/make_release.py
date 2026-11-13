@@ -1,34 +1,44 @@
-"""Tạo thư mục phát hành để đặt lên thư mục chia sẻ LAN.
+"""Chuẩn bị file để đăng lên GitHub Release (app tự cập nhật từ Release mới nhất).
 
 Chạy:
-  python tools\\make_release.py <file cài đặt .exe> <phiên bản> <thư mục đích> [ghi chú]
+  python tools\\make_release.py <file .exe đã build> <phiên bản> [thư mục đích]
 
 Ví dụ:
-  python tools\\make_release.py D:\\Code\\GetAudio-Setup-1.3.0.exe 1.3.0 D:\\Code\\_CAP_NHAT\\GetAudio "Sửa lỗi"
-Kết quả: thư mục đích có file cài đặt và version.json (kèm SHA-256).
+  python tools\\make_release.py "dist\\Gen Audio 4.2.1.exe" 4.2.1
+Kết quả (mặc định trong release\\<phiên bản>):
+  - GetAudio-4.2.1.exe          (file app, tên không dấu cách)
+  - GetAudio-4.2.1.exe.sha256   (mã SHA-256 để app kiểm tra file tải về)
+Sau đó tạo Release có tag v4.2.1 và đính kèm cả 2 file, ví dụ:
+  gh release create v4.2.1 release\\4.2.1\\GetAudio-4.2.1.exe release\\4.2.1\\GetAudio-4.2.1.exe.sha256 --notes "..."
 """
 import hashlib
-import json
 import shutil
 import sys
 from pathlib import Path
 
-if len(sys.argv) < 4:
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import updater  # noqa: E402
+
+if len(sys.argv) < 3:
     raise SystemExit(__doc__)
-installer = Path(sys.argv[1])
-version = sys.argv[2]
-dest = Path(sys.argv[3])
-notes = sys.argv[4] if len(sys.argv) > 4 else ''
-if not installer.is_file():
-    raise SystemExit(f'Không thấy file: {installer}')
+exe = Path(sys.argv[1])
+version = sys.argv[2].lstrip('vV')
+dest = Path(sys.argv[3]) if len(sys.argv) > 3 else Path(__file__).resolve().parent.parent / 'release' / version
+if not exe.is_file():
+    raise SystemExit(f'Không thấy file: {exe}')
+if not updater.parse_version(version):
+    raise SystemExit(f'Phiên bản không hợp lệ: {version}')
 dest.mkdir(parents=True, exist_ok=True)
 digest = hashlib.sha256()
-with installer.open('rb') as f:
+with exe.open('rb') as f:
     for chunk in iter(lambda: f.read(1 << 20), b''):
         digest.update(chunk)
-target = dest / installer.name
-if installer.resolve() != target.resolve():
-    shutil.copy2(installer, target)
-manifest = {'version': version, 'file': installer.name, 'sha256': digest.hexdigest(), 'notes': notes}
-(dest / 'version.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
-print('Da tao:', dest / 'version.json')
+name = updater.asset_name(version)
+target = dest / name
+if exe.resolve() != target.resolve():
+    shutil.copy2(exe, target)
+sha = digest.hexdigest()
+(dest / (name + '.sha256')).write_text(f'{sha}  {name}\n', encoding='ascii')
+print('Da tao:', target)
+print('SHA256:', sha)
+print(f'Tag: v{version}')
